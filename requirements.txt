@@ -16,3 +16,4 @@ requests
 playwright
 google-genai
 numpy
+Pillow
