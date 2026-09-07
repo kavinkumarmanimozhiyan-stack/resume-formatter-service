@@ -9,7 +9,7 @@ _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env
 
 class Settings(BaseSettings):
     GOOGLE_API_KEY: Optional[str] = None
-    PORT: int = 8000
+    # PORT: int = 8000
     MAX_FILE_SIZE_MB: int = 10
     # Comma-separated frontend origins permitted to call this API from a browser.
     # Add the deployed frontend URL here (for example, https://app.example.com).
