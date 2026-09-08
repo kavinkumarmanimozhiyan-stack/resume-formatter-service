@@ -174,7 +174,7 @@ def _get_shared_client():
 # has access to; keep them pinned (not "latest") so behavior doesn't drift
 # under you.
 GEMINI_MODEL_VISION = "gemini-3.1-pro-preview"   # Pass 1: token/geometry extraction
-GEMINI_MODEL_HTML = "gemini-3.1-pro-preview"     # Pass 2: HTML generation
+GEMINI_MODEL_HTML = "gemini-3.5-flash"    # Pass 2: HTML generation
 
 
 def _normalize_gemini_provider(provider: str | None) -> str:
