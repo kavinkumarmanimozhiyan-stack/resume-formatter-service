@@ -53,15 +53,48 @@ def get_llm_runtime(llm_settings: Optional[dict] = None) -> Tuple[Any, str, str,
     model = ((llm_settings or {}).get("model") or "").strip()
 
     if provider == "gemini":
-        if api_key:
-            client = genai.Client(api_key=api_key)
-        elif settings.GOOGLE_API_KEY:
-            client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-        else:
-            raise ValueError(
-                "No Gemini API key was provided. Supply llm_api_key in the request or set GOOGLE_API_KEY."
-            )
-        return client, provider, model or DEFAULT_GEMINI_MODEL, api_key
+     effective_api_key = api_key or settings.GOOGLE_API_KEY
+
+     if not effective_api_key:
+        raise ValueError(
+            "No Gemini API key was provided. Supply llm_api_key "
+            "in the request or set GOOGLE_API_KEY."
+        )
+
+     effective_model = model or DEFAULT_GEMINI_MODEL
+
+     print(
+        f"[GEMINI] provider={provider}, "
+        f"model={effective_model}, "
+        f"api_key_source={'llm_settings' if api_key else 'GOOGLE_API_KEY'}, "
+        f"api_key_present={bool(effective_api_key)}"
+    )
+
+     if client is None:
+        client = genai.Client(api_key=effective_api_key)
+
+     try:
+        response = client.models.generate_content(
+            model=effective_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            ),
+        )
+
+        print("[GEMINI] generation successful")
+
+        return (getattr(response, "text", "") or "").strip()
+
+     except Exception as exc:
+        print(
+            f"[GEMINI ERROR] "
+            f"type={type(exc).__name__}, "
+            f"error={exc}"
+        )
+        raise
 
     if provider == "claude":
         if not api_key:
@@ -194,7 +227,7 @@ def generate_llm_text(
             "in the request or set GOOGLE_API_KEY."
         )
 
-     effective_model = DEFAULT_GEMINI_MODEL
+     effective_model = model or DEFAULT_GEMINI_MODEL
 
      print(
         f"[GEMINI] provider={provider}, "
@@ -206,7 +239,7 @@ def generate_llm_text(
      if client is None:
         client = genai.Client(api_key=effective_api_key)
 
-     try:
+    try:
         response = client.models.generate_content(
             model=effective_model,
             contents=prompt,
@@ -221,7 +254,7 @@ def generate_llm_text(
 
         return (getattr(response, "text", "") or "").strip()
 
-     except Exception as exc:
+    except Exception as exc:
         print(
             f"[GEMINI ERROR] "
             f"type={type(exc).__name__}, "
