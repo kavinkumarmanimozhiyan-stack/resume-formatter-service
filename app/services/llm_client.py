@@ -194,7 +194,7 @@ def generate_llm_text(
             "in the request or set GOOGLE_API_KEY."
         )
 
-     effective_model = model or DEFAULT_GEMINI_MODEL
+     effective_model = DEFAULT_GEMINI_MODEL
 
      print(
         f"[GEMINI] provider={provider}, "
@@ -203,10 +203,10 @@ def generate_llm_text(
         f"api_key_present={bool(effective_api_key)}"
     )
 
-    if client is None:
+     if client is None:
         client = genai.Client(api_key=effective_api_key)
 
-    try:
+     try:
         response = client.models.generate_content(
             model=effective_model,
             contents=prompt,
@@ -221,13 +221,14 @@ def generate_llm_text(
 
         return (getattr(response, "text", "") or "").strip()
 
-    except Exception as exc:
+     except Exception as exc:
         print(
             f"[GEMINI ERROR] "
             f"type={type(exc).__name__}, "
             f"error={exc}"
         )
         raise
+
 
     if provider == "claude":
         message = client.messages.create(
