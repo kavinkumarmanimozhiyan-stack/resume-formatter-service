@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
 
+IS_VERCEL = bool(os.getenv("VERCEL"))
 
 class Settings(BaseSettings):
     GOOGLE_API_KEY: Optional[str] = None
@@ -14,7 +15,12 @@ class Settings(BaseSettings):
     # Comma-separated frontend origins permitted to call this API from a browser.
     # Add the deployed frontend URL here (for example, https://app.example.com).
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
-    LLM_SETTINGS_DB_PATH: str = "data/app.db"
+    # LLM_SETTINGS_DB_PATH: str = "data/app.db"
+    LLM_SETTINGS_DB_PATH: str = (
+    "/tmp/data/llm_settings.db"
+    if IS_VERCEL
+    else "data/llm_settings.db"
+)
     LLM_SETTINGS_ENCRYPTION_KEY: Optional[str] = None
 
     # Cloudinary settings
