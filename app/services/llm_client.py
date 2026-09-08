@@ -19,6 +19,8 @@ DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434/api/chat"
 HTTP_CLIENT_USER_AGENT = "ResumeFormatter/1.0 (+https://localhost)"
 
 
+
+
 def _normalize_provider(provider: Optional[str]) -> str:
     provider = (provider or "gemini").strip().lower()
     if provider in ("google", "googleai", "genai"):
@@ -184,16 +186,35 @@ def generate_llm_text(
     max_output_tokens: int = 32000,
 ) -> str:
     if provider == "gemini":
+        effective_api_key = api_key or settings.GOOGLE_API_KEY
+
+        if not effective_api_key:
+            raise ValueError(
+                "No Gemini API key was provided. Supply llm_api_key in the request or set GOOGLE_API_KEY."
+            )
+
+        effective_model = model or DEFAULT_GEMINI_MODEL
+
+        print(
+            f"[GEMINI] provider={provider}, "
+            f"model={effective_model}, "
+            f"api_key_source={'llm_settings' if api_key else 'GOOGLE_API_KEY'}, "
+            f"api_key_present={bool(effective_api_key)}"
+        )
+
+        if client is None:
+            client = genai.Client(api_key=effective_api_key)
+
         response = client.models.generate_content(
-            model=model,
+            model=effective_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                max_output_tokens=max_output_tokens,
                 temperature=temperature,
+                max_output_tokens=max_output_tokens,
             ),
         )
-        return response.text.strip()
+        return (getattr(response, "text", "") or "").strip()
 
     if provider == "claude":
         message = client.messages.create(
