@@ -9,6 +9,7 @@ from app.middleware.error_handler import global_exception_handler
 from app.services.llm_settings_store import init_llm_settings_store
 from app.init_cloudinary import init_cloudinary
 
+DATA_DIR = "/tmp/data"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -21,7 +22,7 @@ async def lifespan(app: FastAPI):
     # "data/" is kept only for the LLM settings store (small app config,
     # not resume/template content). Remove this too if you'd rather keep
     # LLM settings purely in-memory or in env vars.
-    os.makedirs("data", exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     cloudinary_ready = init_cloudinary()
     if cloudinary_ready:
