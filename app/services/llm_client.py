@@ -9,7 +9,7 @@ from google.genai import types
 from app.config import settings
 
 
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_CLAUDE_MODEL = "claude-2.1"
 DEFAULT_OPENAI_MODEL = "gpt-4.1"
 DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
