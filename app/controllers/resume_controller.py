@@ -400,15 +400,41 @@ def _convert_html_to_docx(html_content: str, work_dir: str) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _convert_legacy_doc_to_docx(doc_path: str) -> Optional[str]:
-    """Convert a legacy binary .doc file to .docx using Microsoft Word."""
+    """Convert a legacy binary .doc file to .docx."""
     output_path = os.path.splitext(doc_path)[0] + ".docx"
+    out_dir = os.path.abspath(os.path.dirname(doc_path))
+    doc_path_abs = os.path.abspath(doc_path)
+
+    # Try LibreOffice first — it's the only converter that works on a
+    # typical Linux server, and it's already a required dependency for
+    # _convert_docx_to_pdf / _convert_html_to_docx elsewhere in this file.
+    office_exe = _find_libreoffice()
+    if office_exe:
+        try:
+            print(f"[CONTROLLER] Converting legacy .doc to .docx with LibreOffice: {office_exe}")
+            result = subprocess.run(
+                [office_exe, "--headless", "--convert-to", "docx", "--outdir", out_dir, doc_path_abs],
+                capture_output=True, text=True, timeout=45,
+            )
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                print(f"[CONTROLLER] Legacy .doc converted to .docx via LibreOffice: {output_path}")
+                return output_path
+            print(f"[CONTROLLER] LibreOffice .doc→.docx failed or produced no file; stderr: {result.stderr}")
+        except FileNotFoundError:
+            print("[CONTROLLER] LibreOffice not available at configured path")
+        except subprocess.TimeoutExpired:
+            print("[CONTROLLER] LibreOffice .doc→.docx conversion timed out (45s)")
+        except Exception as e:
+            print(f"[CONTROLLER] LibreOffice .doc→.docx conversion failed: {e}")
+
+    # Fallback: Microsoft Word COM automation (Windows + Word installed only)
     try:
         import importlib.util
         if not importlib.util.find_spec("win32com"):
-            print("[CONTROLLER] pywin32 is unavailable; cannot convert legacy .doc")
+            print("[CONTROLLER] pywin32 is unavailable; cannot convert legacy .doc via Word COM")
             return None
 
-        print("[CONTROLLER] Converting legacy .doc to .docx with Microsoft Word...")
+        print("[CONTROLLER] Converting legacy .doc to .docx with Microsoft Word COM...")
         result = subprocess.run(
             [
                 sys.executable,
@@ -428,7 +454,7 @@ def _convert_legacy_doc_to_docx(doc_path: str) -> Optional[str]:
                     "    pythoncom.CoUninitialize()\n"
                     "sys.exit(0 if os.path.exists(destination) and os.path.getsize(destination) > 0 else 1)"
                 ),
-                doc_path,
+                doc_path_abs,
                 output_path,
             ],
             capture_output=True,
@@ -436,15 +462,14 @@ def _convert_legacy_doc_to_docx(doc_path: str) -> Optional[str]:
             timeout=45,
         )
         if result.returncode == 0 and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
-            print(f"[CONTROLLER] Legacy .doc converted to .docx: {output_path}")
+            print(f"[CONTROLLER] Legacy .doc converted to .docx via Word COM: {output_path}")
             return output_path
-        print(f"[CONTROLLER] Legacy .doc conversion failed: {result.stderr.strip()}")
+        print(f"[CONTROLLER] Legacy .doc conversion via Word COM failed: {result.stderr.strip()}")
     except subprocess.TimeoutExpired:
         print("[CONTROLLER] Legacy .doc conversion timed out")
     except Exception as e:
         print(f"[CONTROLLER] Legacy .doc conversion failed: {e}")
     return None
-
 
 async def _run_pipeline(
     resume_x: UploadFile,
