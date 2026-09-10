@@ -39,6 +39,8 @@ import subprocess
 from datetime import datetime, timezone
 from typing import Optional
 
+import uuid
+
 from fastapi import UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse
 
@@ -106,7 +108,48 @@ def _find_libreoffice() -> Optional[str]:
             return candidate
     return None
 
+def _soffice_headless_convert(
+    office_exe: str,
+    convert_to: str,
+    outdir: str,
+    src_path: str,
+    timeout: int,
+) -> subprocess.CompletedProcess:
+    """
+    Run `soffice --headless --convert-to ...` with an isolated user profile.
 
+    WHY: LibreOffice locks a single shared profile directory (normally
+    ~/.config/libreoffice) on first launch. Two soffice processes running
+    concurrently against the SAME profile can silently fail, hang, or
+    produce no output — this is exactly what happens when the frontend
+    fires /generate-resume and /generate-resume-html in parallel for the
+    same request, each spawning its own soffice conversion at the same
+    time. Giving every invocation its own throwaway profile directory via
+    -env:UserInstallation removes the lock contention entirely; each
+    process gets a private LibreOffice "install" for the duration of the
+    call, and never touches another process's profile.
+
+    Cleans up the profile directory after the subprocess finishes,
+    success or failure, so /tmp doesn't accumulate one directory per
+    conversion over the life of the server.
+    """
+    profile_dir = os.path.join(tempfile.gettempdir(), f"lo_profile_{uuid.uuid4().hex}")
+    profile_uri = f"file://{profile_dir}"
+
+    try:
+        return subprocess.run(
+            [
+                office_exe,
+                f"-env:UserInstallation={profile_uri}",
+                "--headless",
+                "--convert-to", convert_to,
+                "--outdir", outdir,
+                src_path,
+            ],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 # ─────────────────────────────────────────────────────────────────────────────
 #  DOCX → PDF conversion (for Gemini Vision)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -124,10 +167,7 @@ def _convert_docx_to_pdf(docx_path: str) -> Optional[str]:
     if office_exe:
         try:
             print(f"[CONTROLLER] Converting DOCX to PDF with LibreOffice: {office_exe}")
-            result = subprocess.run(
-                [office_exe, "--headless", "--convert-to", "pdf", "--outdir", out_dir, docx_path],
-                capture_output=True, text=True, timeout=30,
-            )
+            result = _soffice_headless_convert(office_exe, "pdf", out_dir, docx_path, timeout=30)
             if _pdf_is_ready(pdf_path):
                 print(f"[CONTROLLER] DOCX to PDF via LibreOffice: {pdf_path}")
                 return pdf_path
@@ -195,10 +235,7 @@ def _convert_docx_to_pdf(docx_path: str) -> Optional[str]:
 
     try:
         print(f"[CONTROLLER] Converting DOCX to PDF with: {office_exe}")
-        result = subprocess.run(
-            [office_exe, "--headless", "--convert-to", "pdf", "--outdir", out_dir, docx_path],
-            capture_output=True, text=True, timeout=45,
-        )
+        result = _soffice_headless_convert(office_exe, "pdf", out_dir, docx_path, timeout=45)
         if result.returncode != 0:
             print(f"[CONTROLLER] LibreOffice stderr: {result.stderr}")
             return None
@@ -232,10 +269,7 @@ def _convert_html_to_docx_libreoffice(html_path: str, work_dir: str, docx_path: 
 
     try:
         print(f"[CONTROLLER] Converting HTML to DOCX with LibreOffice: {office_exe}")
-        result = subprocess.run(
-            [office_exe, "--headless", "--convert-to", "docx", "--outdir", work_dir, html_path],
-            capture_output=True, text=True, timeout=45,
-        )
+        result = _soffice_headless_convert(office_exe, "docx", work_dir, html_path, timeout=45)
         if os.path.exists(docx_path) and os.path.getsize(docx_path) > 1000:
             print(f"[CONTROLLER] HTML→DOCX via LibreOffice: {docx_path}")
             return docx_path
@@ -250,7 +284,6 @@ def _convert_html_to_docx_libreoffice(html_path: str, work_dir: str, docx_path: 
     except Exception as e:
         print(f"[CONTROLLER] LibreOffice HTML→DOCX unexpected error: {e}")
         return None
-
 
 def _convert_html_to_docx_word_com(html_path: str, docx_path: str) -> Optional[str]:
     """
@@ -409,17 +442,14 @@ def _convert_legacy_doc_to_docx(doc_path: str) -> Optional[str]:
     out_dir = os.path.abspath(os.path.dirname(doc_path))
     doc_path_abs = os.path.abspath(doc_path)
 
-    # Try LibreOffice first — it's the only converter that works on a
-    # typical Linux server, and it's already a required dependency for
-    # _convert_docx_to_pdf / _convert_html_to_docx elsewhere in this file.
     office_exe = _find_libreoffice()
+    if not office_exe:
+        print("[CONTROLLER] No LibreOffice found for legacy .doc conversion "
+              "(checked LIBREOFFICE_PATH/SOFFICE_PATH env vars, PATH, and default install locations).")
     if office_exe:
         try:
             print(f"[CONTROLLER] Converting legacy .doc to .docx with LibreOffice: {office_exe}")
-            result = subprocess.run(
-                [office_exe, "--headless", "--convert-to", "docx", "--outdir", out_dir, doc_path_abs],
-                capture_output=True, text=True, timeout=45,
-            )
+            result = _soffice_headless_convert(office_exe, "docx", out_dir, doc_path_abs, timeout=45)
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                 print(f"[CONTROLLER] Legacy .doc converted to .docx via LibreOffice: {output_path}")
                 return output_path
