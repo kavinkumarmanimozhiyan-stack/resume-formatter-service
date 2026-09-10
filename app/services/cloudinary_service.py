@@ -86,6 +86,7 @@ def download_template(public_id: str, output_path: str) -> bool:
         response = requests.get(
             secure_url,
             timeout=30,
+            stream=True,
         )
 
         response.raise_for_status()
@@ -96,7 +97,9 @@ def download_template(public_id: str, output_path: str) -> bool:
         )
 
         with open(output_path, "wb") as f:
-            f.write(response.content)
+            for chunk in response.iter_content(chunk_size=1024 * 64):
+                if chunk:
+                    f.write(chunk)
 
         logger.info(
             f"[CLOUDINARY] Template downloaded successfully: {output_path}"

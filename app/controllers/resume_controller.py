@@ -47,6 +47,10 @@ from app.services.gemini_service import generate_formatted_resume
 from app.services.pdf_generator import generate_pdf_from_html
 from app.config import settings
 
+# Caps how many full pipelines (Gemini + rasterization + Chromium +
+# LibreOffice) run concurrently — see MAX_CONCURRENT_PIPELINES in config.py.
+_pipeline_semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_PIPELINES)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  File-type helpers
@@ -566,7 +570,12 @@ async def _run_pipeline(
             print("[CONTROLLER] DOCX→PDF failed; Gemini will use text-only mode")
 
     print("[CONTROLLER] Calling Gemini pipeline...")
-    html_content = generate_formatted_resume(
+    # generate_formatted_resume is a synchronous, long-running call (Gemini
+    # network calls + PyMuPDF rasterization) — run it in a worker thread so
+    # it doesn't block the event loop for the whole request, same pattern
+    # already used below for generate_pdf_from_html / docx conversion.
+    html_content = await asyncio.to_thread(
+        generate_formatted_resume,
         resume_x_pdf_path=resume_x_pdf_path,
         resume_x_text=resume_x_text,
         resume_y_text=resume_y_text,
@@ -642,7 +651,8 @@ async def format_resume(
     work_dir = tempfile.mkdtemp(prefix="resumefmt_")
 
     try:
-        result = await _run_pipeline(resume_x, resume_y, work_dir, return_html=return_html, llm_settings=llm_settings)
+        async with _pipeline_semaphore:
+            result = await _run_pipeline(resume_x, resume_y, work_dir, return_html=return_html, llm_settings=llm_settings)
 
         if return_html:
             if result.get("docx_base64"):
@@ -695,7 +705,8 @@ async def format_resume_html(
     work_dir = tempfile.mkdtemp(prefix="resumefmt_")
 
     try:
-        result = await _run_pipeline(resume_x, resume_y, work_dir, return_html=True, llm_settings=llm_settings)
+        async with _pipeline_semaphore:
+            result = await _run_pipeline(resume_x, resume_y, work_dir, return_html=True, llm_settings=llm_settings)
 
         if result.get("docx_base64"):
             return JSONResponse(status_code=200, content={

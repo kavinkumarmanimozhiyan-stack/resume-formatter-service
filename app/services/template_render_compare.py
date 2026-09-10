@@ -18,29 +18,12 @@ except ImportError:  # pragma: no cover
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_html_to_pdf_bytes(html: str, page_size: str = "A4") -> bytes:
-  
-    import concurrent.futures
+    from . import browser_pool
 
-    def _render() -> bytes:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            page.set_content(html, wait_until="networkidle")
-            pdf_bytes = page.pdf(
-                print_background=True,
-                prefer_css_page_size=True,
-            )
-            browser.close()
-        return pdf_bytes
-
-    # A fresh thread per call is deliberate and simple; if this renderer
-    # gets called often enough for thread-spawn overhead to matter, switch
-    # to a persistent ThreadPoolExecutor held at module scope instead.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_render)
-        return future.result(timeout=60)
+    return browser_pool.render_pdf(html, {
+        "print_background": True,
+        "prefer_css_page_size": True,
+    })
 
 
 def pdf_bytes_to_png_images(pdf_bytes: bytes, dpi: int = 220, max_pages: int = 3) -> list[bytes]:
@@ -76,12 +59,21 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore
 
 
-def find_color_block_bbox(png_bytes: bytes, hex_color: str, tol: int = 22) -> Optional[dict]:
-   
+def _decode_rgb(png_bytes: bytes) -> np.ndarray:
+    return np.asarray(Image.open(io.BytesIO(png_bytes)).convert("RGB"))
+
+
+def _decode_gray(png_bytes: bytes) -> np.ndarray:
+    return np.asarray(Image.open(io.BytesIO(png_bytes)).convert("L"))
+
+
+def find_color_block_bbox(arr: np.ndarray, hex_color: str, tol: int = 22) -> Optional[dict]:
+    """`arr` is an already-decoded RGB array (see `_decode_rgb`) — callers
+    share one decode per image instead of each re-decoding the same PNG
+    bytes (this used to be called up to ~4x per generated image per
+    similarity score)."""
     from scipy import ndimage
 
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    arr = np.asarray(img)
     target = np.array(_hex_to_rgb(hex_color))
 
     diff = np.abs(arr.astype(int) - target.astype(int))
@@ -115,8 +107,8 @@ def find_color_block_bbox(png_bytes: bytes, hex_color: str, tol: int = 22) -> Op
     }
 
 
-def compute_geometry_diffs(tokens: dict, generated_png: bytes, page_height_pt: float = 842.0, page_width_pt: float = 595.0) -> list[dict]:
-   
+def compute_geometry_diffs(tokens: dict, generated_rgb: np.ndarray, page_height_pt: float = 842.0, page_width_pt: float = 595.0) -> list[dict]:
+
     diffs: list[dict] = []
     blocks = tokens.get("blocks", []) or []
     sidebar = tokens.get("sidebar", {}) or {}
@@ -133,7 +125,7 @@ def compute_geometry_diffs(tokens: dict, generated_png: bytes, page_height_pt: f
         if not hex_color:
             continue
 
-        actual = find_color_block_bbox(generated_png, hex_color)
+        actual = find_color_block_bbox(generated_rgb, hex_color)
         expected = {
             "x_pct": block.get("x_pct", 0),
             "y_pct": block.get("y_pct", 0),
@@ -182,10 +174,8 @@ def compute_geometry_diffs(tokens: dict, generated_png: bytes, page_height_pt: f
 #  Structural / color / typography scoring (PASS 4, part 2)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def row_ink_profile(png_bytes: bytes, bins: int = 60) -> np.ndarray:
-   
-    img = Image.open(io.BytesIO(png_bytes)).convert("L")
-    arr = np.asarray(img)
+def row_ink_profile(arr: np.ndarray, bins: int = 60) -> np.ndarray:
+    """`arr` is an already-decoded grayscale array (see `_decode_gray`)."""
     h = arr.shape[0]
     band_edges = np.linspace(0, h, bins + 1).astype(int)
     profile = np.zeros(bins)
@@ -197,17 +187,17 @@ def row_ink_profile(png_bytes: bytes, bins: int = 60) -> np.ndarray:
     return profile
 
 
-def compute_structure_score(template_png: bytes, generated_png: bytes, bins: int = 60) -> float:
-   
-    p1 = row_ink_profile(template_png, bins)
-    p2 = row_ink_profile(generated_png, bins)
+def compute_structure_score(template_gray: np.ndarray, generated_gray: np.ndarray, bins: int = 60) -> float:
+
+    p1 = row_ink_profile(template_gray, bins)
+    p2 = row_ink_profile(generated_gray, bins)
     if np.std(p1) == 0 or np.std(p2) == 0:
         return 1.0 if np.allclose(p1, p2) else 0.5
     corr = float(np.corrcoef(p1, p2)[0, 1])
     return max(0.0, (corr + 1) / 2)  # map [-1,1] -> [0,1]
 
 
-def compute_color_score(tokens: dict, generated_png: bytes) -> float:
+def compute_color_score(tokens: dict, generated_rgb: np.ndarray) -> float:
     """
     Average color-match fraction across every known fill color in the
     template tokens (sidebar, header, accent) — did the generated render
@@ -221,7 +211,7 @@ def compute_color_score(tokens: dict, generated_png: bytes) -> float:
 
     scores = []
     for hex_color in colors:
-        bbox = find_color_block_bbox(generated_png, hex_color, tol=30)
+        bbox = find_color_block_bbox(generated_rgb, hex_color, tol=30)
         scores.append(1.0 if bbox is not None else 0.0)
     return sum(scores) / len(scores)
 
@@ -240,18 +230,18 @@ def compute_geometry_score(diffs: list[dict], page_width_pt: float = 595.0) -> f
     return max(0.0, 1.0 - (sum(penalties) / len(penalties)))
 
 
-def compute_typography_score(template_png: bytes, generated_png: bytes) -> float:
-    
-    def line_spacing_estimate(png_bytes: bytes) -> float:
-        profile = row_ink_profile(png_bytes, bins=200)
+def compute_typography_score(template_gray: np.ndarray, generated_gray: np.ndarray) -> float:
+
+    def line_spacing_estimate(gray_arr: np.ndarray) -> float:
+        profile = row_ink_profile(gray_arr, bins=200)
         peaks = [i for i in range(1, len(profile) - 1) if profile[i] > profile[i - 1] and profile[i] > profile[i + 1] and profile[i] > 0.05]
         if len(peaks) < 2:
             return 0.0
         gaps = np.diff(peaks)
         return float(np.mean(gaps))
 
-    s1 = line_spacing_estimate(template_png)
-    s2 = line_spacing_estimate(generated_png)
+    s1 = line_spacing_estimate(template_gray)
+    s2 = line_spacing_estimate(generated_gray)
     if s1 == 0 or s2 == 0:
         return 0.75  # insufficient signal — neutral-ish score, not a hard fail
     ratio = min(s1, s2) / max(s1, s2)
@@ -264,14 +254,20 @@ def compute_similarity_score(
     tokens: dict,
     weights: Optional[dict] = None,
 ) -> dict:
-   
+    # Decode each image once (RGB for color/geometry checks, grayscale for
+    # structure/typography) and share the arrays across every sub-score
+    # instead of each one re-decoding the same PNG bytes independently.
     weights = weights or {"geometry": 0.60, "structure": 0.05, "color": 0.25, "typography": 0.10}
 
-    diffs = compute_geometry_diffs(tokens, generated_png)
+    generated_rgb = _decode_rgb(generated_png)
+    template_gray = _decode_gray(template_png)
+    generated_gray = _decode_gray(generated_png)
+
+    diffs = compute_geometry_diffs(tokens, generated_rgb)
     geometry_score = compute_geometry_score(diffs)
-    structure_score = compute_structure_score(template_png, generated_png)
-    color_score = compute_color_score(tokens, generated_png)
-    typography_score = compute_typography_score(template_png, generated_png)
+    structure_score = compute_structure_score(template_gray, generated_gray)
+    color_score = compute_color_score(tokens, generated_rgb)
+    typography_score = compute_typography_score(template_gray, generated_gray)
 
     overall = (
         geometry_score * weights["geometry"]
