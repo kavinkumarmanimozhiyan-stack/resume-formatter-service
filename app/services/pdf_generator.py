@@ -76,32 +76,22 @@ def _inject_safety_css(html: str) -> str:
 def _render_with_playwright(html: str, output_path: str) -> bool:
     """Render HTML to PDF using Playwright/Chromium. Returns True on success."""
     try:
-        from playwright.sync_api import sync_playwright
+        import playwright  # noqa: F401
+        from . import browser_pool
     except ImportError:
         print("[PDF_GENERATOR] Playwright not installed — falling back")
         return False
 
-    print("[PDF_GENERATOR] Rendering with Playwright/Chromium...")
+    print("[PDF_GENERATOR] Rendering with Playwright/Chromium (pooled)...")
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            context = browser.new_context()
-            page = context.new_page()
-            page.set_content(html, wait_until="networkidle")
-            page.emulate_media(media="print")
-            page.pdf(
-              path=output_path,
-              format="A4",
-               print_background=True,
-    margin={
-        "top":    "0mm",
-        "right":  "0mm",
-        "bottom": "0mm",
-        "left":   "0mm",
-    },
-    prefer_css_page_size=True,
-)
-            browser.close()
+        pdf_bytes = browser_pool.render_pdf(html, {
+            "format": "A4",
+            "print_background": True,
+            "margin": {"top": "0mm", "right": "0mm", "bottom": "0mm", "left": "0mm"},
+            "prefer_css_page_size": True,
+        })
+        with open(output_path, "wb") as f:
+            f.write(pdf_bytes)
         print(f"[PDF_GENERATOR] Playwright render OK")
         return True
     except Exception as e:

@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: Optional[str] = None
     # PORT: int = 8000
     MAX_FILE_SIZE_MB: int = 10
+    # Caps how many full resume-generation pipelines (Gemini calls +
+    # rasterization + Chromium + LibreOffice) run at once. Default 1 —
+    # tuned for a 1 GB instance where two full pipelines don't fit
+    # simultaneously. Excess requests queue on the semaphore rather than
+    # piling up memory in parallel. Raise only after benchmarking headroom.
+    MAX_CONCURRENT_PIPELINES: int = 1
     # Comma-separated frontend origins permitted to call this API from a browser.
     # Add the deployed frontend URL here (for example, https://app.example.com).
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"

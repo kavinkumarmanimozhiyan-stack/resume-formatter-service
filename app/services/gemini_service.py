@@ -143,7 +143,16 @@ from app.services.template_render_compare import (
 # ─────────────────────────────────────────────────────────────────────────────
 MAX_ITERATIONS = 2          # hard cap — never loops forever
 SIMILARITY_THRESHOLD = 0.92  # stop early once we're at least this close
-COMPARE_DPI = 220            # must match the DPI used to rasterize the template
+
+# Vision-pass DPI: what Gemini actually sees for token/geometry extraction.
+# Accuracy-critical — do not lower.
+VISION_DPI = 220
+# Compare-loop DPI: used only for the internal pixel-diff similarity score
+# (never sent to Gemini, never shown to the user). Rasterized fresh on both
+# sides at this resolution — lower than VISION_DPI on purpose, since scoring
+# doesn't need print-quality detail. Keeps compare-loop memory down without
+# touching what Gemini sees.
+COMPARE_DPI = 150
 
 # Marker Gemini is instructed to emit verbatim as an <img src="..."> value.
 # Deliberately unusual/unique so it can never collide with real content.
@@ -355,8 +364,8 @@ def generate_formatted_resume(
             print(f"[GEMINI] WARNING: could not load template PDF: {e}")
 
         try:
-            page_images_b64 = rasterize_pdf_pages(template_pdf_path, dpi=220, max_pages=3)
-            print(f"[GEMINI] rasterized {len(page_images_b64)} template page images @220dpi")
+            page_images_b64 = rasterize_pdf_pages(template_pdf_path, dpi=VISION_DPI, max_pages=3)
+            print(f"[GEMINI] rasterized {len(page_images_b64)} template page images @{VISION_DPI}dpi")
         except Exception as e:
             print(f"[GEMINI] WARNING: rasterization failed: {e}")
 
@@ -457,9 +466,15 @@ def generate_formatted_resume(
         return html_content
 
     try:
-        template_png = base64.b64decode(page_images_b64[0])
+        # Rasterize a dedicated compare-resolution copy — deliberately NOT
+        # reusing page_images_b64 (that stays at VISION_DPI for Gemini).
+        # Both sides of the similarity comparison must be rasterized at the
+        # same DPI for compute_similarity_score's pixel-diff/color-block
+        # logic to stay valid.
+        compare_template_images = rasterize_pdf_pages(template_pdf_path, dpi=COMPARE_DPI, max_pages=1)
+        template_png = base64.b64decode(compare_template_images[0])
     except Exception as e:
-        print(f"[GEMINI] WARNING: could not decode template page image for comparison: {e}")
+        print(f"[GEMINI] WARNING: could not rasterize/decode template page image for comparison: {e}")
         return html_content
 
     for iteration in range(1, max_iterations + 1):
@@ -491,6 +506,10 @@ def generate_formatted_resume(
         )
         for d in score["diffs"]:
             print(f"[GEMINI]   diff: {d}")
+
+        # Done with this iteration's raw render/rasterize buffers — release
+        # before the next iteration (if any) allocates fresh ones.
+        del generated_pdf_bytes, generated_pages
 
         if score["overall_score"] >= similarity_threshold or score["num_issues"] == 0:
             print(f"[GEMINI] Iteration {iteration}: similarity threshold reached ({similarity_threshold*100:.0f}%). Stopping.")
